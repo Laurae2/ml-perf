@@ -37,7 +37,7 @@ args_list <- list(
   optparse::make_option("--output_chart", type = "character", default = "jpeg", metavar = "Plot File Format",
                         help = "Outputs results as a chart using the desired format, can be any of: \"none\" (for no chart), \"eps\", \"ps\", \"tex\" (pictex), \"pdf\", \"jpeg\", \"tiff\", \"png\", \"bmp\", \"svg\", \"wmf\" (Windows only) [default: \"%default\"]"),
   optparse::make_option("--cpu_pinning", type = "character", default = "None", metavar = "CPU Pinning",
-                        help = "CPU pinning, as one would do using taskset with -cp parameter but 1-indexed instead of 0-indexed, separated by ; for each spawned process... (such as --cpu-pinning=\"1;2;3\" to pin 1st process to core 1, 2nd process to core 2, etc... note: you cannot use two CPU ranges nor one CPU range and one CPU thread for one process, if you wish to use two CPU ranges then use CPU threads instead) use \"None\" for no CPU pinning [default: \"%default\"]"),
+                        help = "CPU pinning, as one would do using taskset with -cp parameter (without range, aka \"-\") but 1-indexed instead of 0-indexed, separated by ; for each spawned process... (such as --cpu-pinning=\"1;2;3\" to pin 1st process to core 1, 2nd process to core 2, etc...) use \"None\" for no CPU pinning [default: \"%default\"]"),
   optparse::make_option("--args", type = "logical", default = FALSE, metavar = "Argument Check",
                         help = "Prints the arguments passed to the R script and exits immediately [default: %default]")
 )
@@ -70,9 +70,9 @@ if (interactive()) {
   }
   
   if (my_cpu_pinning != "None") {
-    my_cpu_pinning_combo <- strsplit(strsplit(my_cpu_pinning, ";")[[1]], "-")
+    my_cpu_pinning_combo <- strsplit(strsplit(my_cpu_pinning, ";")[[1]], ",")
     my_cpu_pinning_combo <- lapply(my_cpu_pinning_combo, function(x) {
-      as.numeric(x) - 1
+      paste(as.numeric(x) - 1, collapse = ",")
     })
   }
   
@@ -118,9 +118,9 @@ if (interactive()) {
   }
   
   if (my_cpu_pinning != "None") {
-    my_cpu_pinning_combo <- strsplit(strsplit(my_cpu_pinning, ";")[[1]], "-")
+    my_cpu_pinning_combo <- strsplit(strsplit(my_cpu_pinning, ";")[[1]], ",")
     my_cpu_pinning_combo <- lapply(my_cpu_pinning_combo, function(x) {
-      as.numeric(x) - 1
+      paste(as.numeric(x) - 1, collapse = ",")
     })
   }
   
@@ -257,20 +257,16 @@ trainer <- function(x, row_sampling, col_sampling, max_depth, n_iter, learning_r
 cat("[", format(Sys.time(), "%a %b %d %Y %X"), "]", " [Parallel] ", my_threads, " Process(es) Creation Time: ", sprintf("%04.03f", system.time({cl <- makeCluster(my_threads)})[[3]]), "s\n", sep = "")
 cat("[", format(Sys.time(), "%a %b %d %Y %X"), "]", " [Parallel] Sending Hardware Specifications Time: ", sprintf("%04.03f", system.time({clusterExport(cl = cl, c("my_threads", "my_gpus", "my_threads_in_threads", "my_cpu_pinning", "my_cpu_pinning_combo"))})[[3]]), "s\n", sep = "")
 invisible(parallel::parLapply(cl = cl, X = seq_len(my_threads), function(x) {
+  if (my_cpu_pinning != "None") {
+    system(paste0("taskset -cp ", my_cpu_pinning_combo[[x]], " ", Sys.getpid()), ignore.stdout = TRUE, ignore.stderr = TRUE)
+  }
+  0 # Enforce memory invalidation after CPU pinning, if the thread memory is not resident to the original thread
+  gc(verbose = FALSE)
   Sys.sleep(time = my_threads / 20) # Prevent file clash on many core systems (typically 50+ threads might attempt to read exactly at the same time the same file, especially if the disk is slow)
   suppressPackageStartupMessages(library(lightgbm))
   suppressPackageStartupMessages(library(Matrix))
   suppressPackageStartupMessages(library(data.table))
   id <<- x
-  if (my_cpu_pinning != "None") {
-    if (length(my_cpu_pinning_combo[[x]]) == 1) {
-      system(paste0("taskset -cp ", my_cpu_pinning_combo[[x]], " ", Sys.getpid()), ignore.stdout = TRUE, ignore.stderr = TRUE)
-    } else {
-      system(paste0("taskset -cp ", my_cpu_pinning_combo[[x]][1], "-", my_cpu_pinning_combo[[x]][2], " ", Sys.getpid()), ignore.stdout = TRUE, ignore.stderr = TRUE)
-    }
-  }
-  0 # Enforce memory invalidation after CPU pinning, if the thread memory is not resident to the original thread
-  gc(verbose = FALSE)
 }))
 cat("[", format(Sys.time(), "%a %b %d %Y %X"), "]", " [Parallel] Sending Data Time: ", sprintf("%04.03f", system.time({clusterExport(cl = cl, c("trainer", "metric", "X_train", "X_test", "labels_train", "labels_test"))})[[3]]), "s\n", sep = "")
 
