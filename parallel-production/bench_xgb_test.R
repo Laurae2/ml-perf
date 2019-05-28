@@ -61,6 +61,7 @@ if (interactive()) {
   my_csv <- TRUE
   my_chart <- "jpeg"
   my_cpu_pinning <- "None"
+  my_cpu_pinning_combo <- ""
   # my_cpu <- system("lscpu | sed -nr '/Model name/ s/.*:\\s*(.*) @ .*/\\1/p' | sed ':a;s/  / /;ta'")
   
   # CHANGE: 0.1M = GPU about 958 MB at peak... choose wisely (here, we are putting 4 models per GPU)
@@ -248,6 +249,8 @@ invisible(parallel::parLapply(cl = cl, X = seq_len(my_threads), function(x) {
 }))
 cat("[", format(Sys.time(), "%a %b %d %Y %X"), "]", " [Parallel] Sending Data Time: ", sprintf("%04.03f", system.time({clusterExport(cl = cl, c("trainer", "metric", "X_train", "X_test", "labels_train", "labels_test"))})[[3]]), "s\n", sep = "")
 
+rm(metric, trainer, X_train, X_test, labels_train, labels_test); invisible(gc(verbose = FALSE))
+
 # Having issues? In a CLI: sudo pkill R
 time_finish <- system.time({
   time_all <- parallel::parLapplyLB(cl = cl, X = seq_len(my_runs), function(x) {
@@ -285,7 +288,7 @@ time_finish <- system.time({
 stopCluster(cl)
 closeAllConnections()
 
-rm(cl, metric, trainer, X_train, X_test, labels_train, labels_test); invisible(gc(verbose = FALSE))
+rm(cl); invisible(gc(verbose = FALSE))
 
 cat("[", format(Sys.time(), "%a %b %d %Y %X"), "]", " [Parallel] Total Time: ", sprintf("%04.03f", time_finish), "s\n", sep = "")
 
