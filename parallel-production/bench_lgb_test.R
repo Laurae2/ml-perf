@@ -45,14 +45,17 @@ args_list <- list(
 # Force data.table as 1 thread in case you are using Fork instead of Sockets (gcc: fork X in process Y when process Y used OpenMP once, fork X cannot use OpenMP otherwise it hangs forever)
 data.table::setDTthreads(1)
 
+model_name <- "LightGBM GBDT"
+model_output <- "lgb_gbdt"
+
 if (interactive()) {
   
   # Put some parameters if you wish to test once...
   my_gpus <- 1L
-  my_gpus_threads <- 58L
-  my_threads <- 1L # parallel::detectCores() - 1L
+  my_gpus_threads <- 1L
+  my_threads <- parallel::detectCores() - 1L
   my_threads_in_threads <- 1L
-  my_runs <- 106L
+  my_runs <- 100L
   my_iqr <- 90L
   my_train <- "train-0.1m.csv"
   my_test <- "test.csv"
@@ -285,6 +288,8 @@ time_finish <- system.time({
       gpus_allowed <- 1
     }
     
+    job_start <- Sys.time()
+    
     speed_out <- system.time({
       speed_in <- trainer(x = x,
                           row_sampling = 0.9,
@@ -299,9 +304,21 @@ time_finish <- system.time({
                           objective = "binary")
     })[[3]]
     
+    job_end <- Sys.time()
+    
     rm(gpus_to_use)
     
-    return(list(total = speed_out, matrix_train_time = speed_in$matrix_train_time, matrix_test_time = speed_in$matrix_test_time, model_time = speed_in$model_time, pred_time = speed_in$pred_time, gc_time = speed_in$gc_time, perf = speed_in$perf))
+    return(list(id = id,
+                model = x,
+                job_start = job_start,
+                job_end = job_end,
+                total = speed_out,
+                matrix_train_time = speed_in$matrix_train_time,
+                matrix_test_time = speed_in$matrix_test_time,
+                model_time = speed_in$model_time,
+                pred_time = speed_in$pred_time,
+                gc_time = speed_in$gc_time,
+                perf = speed_in$perf))
     
   })
 })[[3]]
@@ -318,27 +335,34 @@ cat("[", format(Sys.time(), "%a %b %d %Y %X"), "]", " [Parallel] Total Time: ", 
 # Gather Data
 
 # Get data
-time_total <- unlist(lapply(time_all, function(x) {round(x[[1]], digits = 3)}))
-matrix_train_time <- unlist(lapply(time_all, function(x) {round(x[[2]], digits = 3)}))
-matrix_test_time <- unlist(lapply(time_all, function(x) {round(x[[3]], digits = 3)}))
-model_time <- unlist(lapply(time_all, function(x) {round(x[[4]], digits = 3)}))
-pred_time <- unlist(lapply(time_all, function(x) {round(x[[5]], digits = 3)}))
-gc_time <- unlist(lapply(time_all, function(x) {round(x[[6]], digits = 3)}))
-perf <- unlist(lapply(time_all, function(x) {round(x[[7]], digits = 6)}))
+ids <- unlist(lapply(time_all, function(x) {x$id}))
+models <- unlist(lapply(time_all, function(x) {x$model}))
+job_starts <- unlist(lapply(time_all, function(x) {x$job_start}))
+job_ends <- unlist(lapply(time_all, function(x) {x$job_end}))
+time_total <- unlist(lapply(time_all, function(x) {round(x$total, digits = 3)}))
+matrix_train_time <- unlist(lapply(time_all, function(x) {round(x$matrix_train_time, digits = 3)}))
+matrix_test_time <- unlist(lapply(time_all, function(x) {round(x$matrix_test_time, digits = 3)}))
+model_time <- unlist(lapply(time_all, function(x) {round(x$model_time, digits = 3)}))
+pred_time <- unlist(lapply(time_all, function(x) {round(x$pred_time, digits = 3)}))
+gc_time <- unlist(lapply(time_all, function(x) {round(x$gc_time, digits = 3)}))
+perf <- unlist(lapply(time_all, function(x) {round(x$perf, digits = 6)}))
 
 # Put all data together
-time_table <- data.table(Run = seq_len(my_runs),
+time_table <- data.table(Run = models,
+                         threads = ids,
+                         start = job_starts,
+                         end = job_ends,
                          time_total = time_total,
                          matrix_train_time = matrix_train_time,
                          matrix_test_time = matrix_test_time,
                          model_time = model_time,
                          pred_time = pred_time,
                          gc_time = gc_time,
-                         perf = perf)
+                         perf = perf)[order(Run), ]
 
 if (my_csv) {
   
-  fwrite(time_table, paste0(my_output, "/ml-perf_lgb_gbdt_", substr(my_train, 1, nchar(my_train) - 4), "_id-", my_id_file, "_iqr", my_iqr, "_", my_threads, "Tx", my_threads_in_threads, "T_", my_gpus, "GPU_", my_runs, "m_", sprintf("%04.03f", time_finish), "s.csv"))
+  fwrite(time_table, paste0(my_output, "/ml-perf_", model_output, "_", substr(my_train, 1, nchar(my_train) - 4), "_id-", my_id_file, "_iqr", my_iqr, "_", my_threads, "Tx", my_threads_in_threads, "T_", my_gpus, "GPU_", my_runs, "m_", sprintf("%04.03f", time_finish), "s.csv"))
   
 }
 
@@ -381,23 +405,7 @@ if (my_chart != "none") {
   # Melt data
   time_table_vertical <- melt(time_table, id.vars = c("Run", "Cluster"), measure.vars = c("time_total", "matrix_train_time", "matrix_test_time", "model_time", "pred_time", "gc_time", "perf"), variable.name = "Variable", value.name = "Value", variable.factor = FALSE, value.factor = FALSE)
   
-  # Rename melted variables to have details in chart
-  # time_table_vertical[Variable == "time_total", Variable := paste0("1. Total Time (S=", sprintf("%04.03f", sum(Value)), ", µ=", sprintf("%04.03f", mean(Value)), ", s=", sprintf("%04.03f", sd(Value)), ")")]
-  # time_table_vertical[Variable == "model_time", Variable := paste0("2. Model Time (S=", sprintf("%04.03f", sum(Value)), ", µ=", sprintf("%04.03f", mean(Value)), ", s=", sprintf("%04.03f", sd(Value)), ")")]
-  # time_table_vertical[Variable == "matrix_train_time", Variable := paste0("3. Matrix Train Build Time (S=", sprintf("%04.03f", sum(Value)), ", µ=", sprintf("%04.03f", mean(Value)), ", s=", sprintf("%04.03f", sd(Value)), ")")]
-  # time_table_vertical[Variable == "matrix_test_time", Variable := paste0("4. Matrix Test Build Time (S=", sprintf("%04.03f", sum(Value)), ", µ=", sprintf("%04.03f", mean(Value)), ", s=", sprintf("%04.03f", sd(Value)), ")")]
-  # time_table_vertical[Variable == "pred_time", Variable := paste0("5. Predict Time (S=", sprintf("%04.03f", sum(Value)), ", µ=", sprintf("%04.03f", mean(Value)), ", s=", sprintf("%04.03f", sd(Value)), ")")]
-  # time_table_vertical[Variable == "gc_time", Variable := paste0("6. Garbage Collector Time (S=", sprintf("%04.03f", sum(Value)), ", µ=", sprintf("%04.03f", mean(Value)), ", s=", sprintf("%04.03f", sd(Value)), ")")]
-  # time_table_vertical[Variable == "perf", Variable := paste0("7. Metric (S=", sprintf("%07.06f", sum(Value)), ", µ=", sprintf("%07.06f", mean(Value)), ", s=", sprintf("%07.06f", sd(Value)), ")")]
-  # cat(sort(unique(time_table_vertical$Variable)), sep = "\n")
-  # time_table_vertical[Variable == "time_total", Variable := paste0("1. Total Time (S=", sprintf("%04.03f", sum(Value)), ", µ=", sprintf("%04.03f", mean(Value)), ", s=", sprintf("%04.03f", sd(Value)), ")")]
-  # time_table_vertical[Variable == "model_time", Variable := paste0("2. Model Time (S=", sprintf("%04.03f", sum(Value)), ", µ=", sprintf("%04.03f", mean(Value)), ", s=", sprintf("%04.03f", sd(Value)), ")")]
-  # time_table_vertical[Variable == "matrix_train_time", Variable := paste0("3. Matrix Train Build Time (S=", sprintf("%04.03f", sum(Value)), ", µ=", sprintf("%04.03f", mean(Value)), ", s=", sprintf("%04.03f", sd(Value)), ")")]
-  # time_table_vertical[Variable == "matrix_test_time", Variable := paste0("4. Matrix Test Build Time (S=", sprintf("%04.03f", sum(Value)), ", µ=", sprintf("%04.03f", mean(Value)), ", s=", sprintf("%04.03f", sd(Value)), ")")]
-  # time_table_vertical[Variable == "pred_time", Variable := paste0("5. Predict Time (S=", sprintf("%04.03f", sum(Value)), ", µ=", sprintf("%04.03f", mean(Value)), ", s=", sprintf("%04.03f", sd(Value)), ")")]
-  # time_table_vertical[Variable == "gc_time", Variable := paste0("6. Garbage Collector Time (S=", sprintf("%04.03f", sum(Value)), ", µ=", sprintf("%04.03f", mean(Value)), ", s=", sprintf("%04.03f", sd(Value)), ")")]
-  # time_table_vertical[Variable == "perf", Variable := paste0("7. Metric (S=", sprintf("%07.06f", sum(Value)), ", µ=", sprintf("%07.06f", mean(Value)), ", s=", sprintf("%07.06f", sd(Value)), ")")]
-  # cat(sort(unique(time_table_vertical$Variable)), sep = "\n")
+  # Adjust with IQR for data
   iqr_rename <- function(values, iqr_logical, text, my_iqr, sprintf_val) {
     return(paste0(text,
                   " (S=", sprintf(sprintf_val, sum(values[iqr_logical]) / my_iqr),
@@ -417,18 +425,41 @@ if (my_chart != "none") {
   time_table_vertical[Variable == "perf", Variable := iqr_rename(values = Value, iqr_logical = IQR, text = "7. Metric", my_iqr = my_iqr / 100, sprintf_val = "%07.06f")]
   cat(sort(unique(time_table_vertical$Variable)), sep = "\n")
   
-  # Plot a nice chart
-  my_plot <- ggplot(data = time_table_vertical, aes(x = Run, y = Value, group = Cluster, color = Cluster)) + geom_point() + facet_wrap(facets = Variable ~ ., nrow = 4, ncol = 2, scales = "free_y") + labs(title = "'Performance' over Models, LightGBM GBDT", subtitle = paste0(my_runs, " Models over ", sprintf("%04.03f", time_finish), " seconds using ", my_threads, " parallel threads, ", my_threads_in_threads, " model threads, and ", my_gpus, " GPUs (throughput: ", sprintf("%04.03f", time_finish / my_runs), "s / Model", ")"), x = "Model", y = paste0("Value or Time (s, IQR=", my_iqr, "%)")) + theme_bw() + theme(legend.position = "none")
-  ggsave(filename = paste0(my_output, "/ml-perf_lgb_gbdt_", substr(my_train, 1, nchar(my_train) - 4), "_id-", my_id_file,  "_iqr", my_iqr, "_", my_threads, "Tx", my_threads_in_threads, "T_", my_gpus, "GPU_", my_runs, "m_", sprintf("%04.03f", time_finish), "s.jpg"),
+  # Plot a nice chart of timings
+  my_plot <- ggplot(data = time_table_vertical, aes(x = Run, y = Value, group = Cluster, color = Cluster)) + geom_point() + facet_wrap(facets = Variable ~ ., nrow = 4, ncol = 2, scales = "free_y") + labs(title = paste0("'Performance' over Models, ", model_name, " (max throughput: ", sprintf("%04.03f", sum(time_total) / my_runs / my_threads), "s / Model)"), subtitle = paste0(my_runs, " Models over ", sprintf("%04.03f", time_finish), " seconds using ", my_threads, " parallel threads, ", my_threads_in_threads, " model threads, and ", my_gpus, " GPUs (throughput: ", sprintf("%04.03f", time_finish / my_runs), "s / Model", ")"), x = "Model", y = paste0("Value or Time (s, IQR=", my_iqr, "%)")) + theme_bw() + theme(legend.position = "none")
+  ggsave(filename = paste0(my_output, "/ml-perf_", model_output, "_", substr(my_train, 1, nchar(my_train) - 4), "_id-", my_id_file,  "_iqr", my_iqr, "_", my_threads, "Tx", my_threads_in_threads, "T_", my_gpus, "GPU_", my_runs, "m_", sprintf("%04.03f", time_finish), "s_1.jpg"),
          plot = my_plot,
          device = my_chart,
-         width = 24,
-         height = 16,
+         width = 32,
+         height = 24,
          units = "cm",
          dpi = "print")
   
   if (interactive()) {
     print(my_plot)
+  }
+  
+  # Parse data for timeline chart
+  time_table_time <- copy(time_table)
+  time_table_time[, threads_min := threads - 0.5]
+  time_table_time[, threads_max := threads + 0.5]
+  time_table_time[, model := as.character(sprintf(paste0("%0", floor(log10(my_threads) + 1), "d"), (((Run - 1) %% my_threads) + 1)))]
+  time_table_time[, end := end - min(start)]
+  time_table_time[, start := start - min(start)]
+  time_table_time
+  
+  # Plot a nice timeline of threads
+  my_plot_time <- ggplot(time_table_time) + geom_rect(aes(xmin = start, xmax = end, ymin = threads_min, ymax = threads_max, fill = model), color = "black", size = 1, linetype = 1) + labs(title = paste0("Timeline of Thread Work over time, ", model_name, " (max throughput: ", sprintf("%04.03f", sum(time_total) / my_runs / my_threads), "s / Model)"), subtitle = paste0(my_runs, " Models over ", sprintf("%04.03f", time_finish), " seconds using ", my_threads, " parallel threads, ", my_threads_in_threads, " model threads, and ", my_gpus, " GPUs (throughput: ", sprintf("%04.03f", time_finish / my_runs), "s / Model", ")"), x = "Time (seconds)", y = "Thread Number (Filled = Busy)") + scale_x_continuous(limits = c(0, max(job_ends) - min(job_starts))) + scale_y_continuous(limits = c(0.5, my_threads + 0.5), breaks = seq_len(my_threads), labels = time_table_time[order(threads), ][, list(my_threads = paste0(as.character(sprintf(paste0("%0", floor(log10(my_threads) + 1), "d"), threads)), " (N=", .N, ")")), by = "threads"]$my_threads) + theme_bw() + theme(legend.position = "none")
+  ggsave(filename = paste0(my_output, "/ml-perf_", model_output, "_", substr(my_train, 1, nchar(my_train) - 4), "_id-", my_id_file,  "_iqr", my_iqr, "_", my_threads, "Tx", my_threads_in_threads, "T_", my_gpus, "GPU_", my_runs, "m_", sprintf("%04.03f", time_finish), "s_2.jpg"),
+         plot = my_plot_time,
+         device = my_chart,
+         width = 32,
+         height = 24,
+         units = "cm",
+         dpi = "print")
+  
+  if (interactive()) {
+    print(my_plot_time)
   }
   
 }
